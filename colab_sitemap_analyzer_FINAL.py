@@ -11,8 +11,9 @@ from urllib.parse import urlparse
 
 print("🚀 Installiere benötigte Bibliotheken...")
 import sys
-!{sys.executable} -m pip install spacy pyphen --quiet
-!{sys.executable} -m spacy download de_core_news_sm --quiet
+import subprocess
+subprocess.run([sys.executable, "-m", "pip", "install", "spacy", "pyphen", "--quiet"], check=True)
+subprocess.run([sys.executable, "-m", "spacy", "download", "de_core_news_sm", "--quiet"], check=True)
 
 import spacy
 from pyphen import Pyphen

@@ -3,9 +3,10 @@
 # Helpful Content, E-E-A-T, Core Web Vitals, Local SEO, Search Intent
 
 import sys
+import subprocess
 print("📦 Installiere Abhängigkeiten...")
-!{sys.executable} -m pip install requests beautifulsoup4 spacy textstat --quiet
-!{sys.executable} -m spacy download de_core_news_sm --quiet
+subprocess.run([sys.executable, "-m", "pip", "install", "requests", "beautifulsoup4", "spacy", "textstat", "--quiet"], check=True)
+subprocess.run([sys.executable, "-m", "spacy", "download", "de_core_news_sm", "--quiet"], check=True)
 
 import requests
 from bs4 import BeautifulSoup
