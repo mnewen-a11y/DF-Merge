@@ -1,25 +1,39 @@
-# SITEMAP ANALYZER - KORRIGIERTE VERSION
-# Mit: KORREKTEM HIX, verbesserten Keywords (N-Gramme), Content-Typen, Verlinkungen
+# SITEMAP CONTENT ANALYZER - FINALE VERSION
+# Mit wissenschaftlich korrektem HIX, Content-Typen, Keywords, Verlinkungen
+# Für Migrations-Aufwandsschätzung: civic-innovation.de + ki-observatorium.de → denkfabrik-bmas.de
 
 import re
 import requests
 from bs4 import BeautifulSoup
 import time
-from collections import defaultdict, Counter
+from collections import Counter
 from urllib.parse import urlparse
 
+print("🚀 Installiere benötigte Bibliotheken...")
+import sys
+!{sys.executable} -m pip install spacy pyphen --quiet
+!{sys.executable} -m spacy download de_core_news_sm --quiet
+
+import spacy
+from pyphen import Pyphen
+import numpy as np
+
+print("✅ Setup abgeschlossen\n")
+
+# Lade Sprachmodell
+nlp = spacy.load('de_core_news_sm')
+pyphen_de = Pyphen(lang='de_DE')
+
 # ============================================================
-# DATEINAMEN
+# KONFIGURATION
 # ============================================================
+
 SITEMAP_FILES = {
     'KI-Observatorium': 'sitemaps/kio-sitemap.xml',
     'Civic Innovation Platform': 'sitemaps/cip-sitemap.xml',
     'Denkfabrik BMAS': 'sitemaps/denkfabrik-sitemap.xml'
 }
 
-# ============================================================
-# DEUTSCHE STOPWÖRTER (erweitert)
-# ============================================================
 GERMAN_STOPWORDS = set([
     'der', 'die', 'das', 'und', 'in', 'zu', 'den', 'für', 'von', 'mit', 'ist',
     'im', 'des', 'sich', 'auf', 'eine', 'auch', 'werden', 'an', 'wie', 'oder',
@@ -43,7 +57,92 @@ GERMAN_STOPWORDS = set([
 ])
 
 # ============================================================
-# HILFSFUNKTIONEN
+# HIX-FUNKTIONEN (Wissenschaftlich korrekt)
+# ============================================================
+
+def count_syllables_accurate(word):
+    return len(pyphen_de.inserted(word).split('-'))
+
+def extract_text_parameters(text):
+    doc = nlp(text)
+    sentences = list(doc.sents)
+    num_sentences = len(sentences)
+    if num_sentences == 0:
+        return None
+    words = [token.text for token in doc if token.is_alpha]
+    num_words = len(words)
+    if num_words == 0:
+        return None
+    asl = num_words / num_sentences
+    syllable_counts = [count_syllables_accurate(word) for word in words]
+    total_syllables = sum(syllable_counts)
+    asw = total_syllables / num_words
+    long_words = [w for w in words if len(w) > 6]
+    iw = (len(long_words) / num_words) * 100
+    polysyllabic = [w for w in words if count_syllables_accurate(w) >= 3]
+    ms = (len(polysyllabic) / num_words) * 100
+    monosyllabic = [w for w in words if count_syllables_accurate(w) == 1]
+    es = (len(monosyllabic) / num_words) * 100
+    polysyllables_per_30 = (len(polysyllabic) / num_sentences) * 30 if num_sentences > 0 else 0
+    return {'asl': asl, 'asw': asw, 'iw': iw, 'ms': ms, 'es': es, 'polysyllables_per_30': polysyllables_per_30}
+
+def calculate_amstad(params):
+    return 180 - params['asl'] - (58.5 * params['asw'])
+
+def calculate_wsf1(params):
+    return (0.1935 * params['ms'] + 0.1672 * params['asl'] + 0.1297 * params['iw'] - 0.0327 * params['es'] - 0.875)
+
+def calculate_smog(params):
+    return 3 + np.sqrt(params['polysyllables_per_30'])
+
+def calculate_lix(params):
+    return params['asl'] + params['iw']
+
+def scale_to_0_10(value, min_easy, max_hard, inverse=False):
+    if inverse:
+        if value <= min_easy:
+            return 10.0
+        elif value >= max_hard:
+            return 0.0
+        else:
+            return 10.0 - ((value - min_easy) / (max_hard - min_easy)) * 10.0
+    else:
+        if value >= min_easy:
+            return 10.0
+        elif value <= max_hard:
+            return 0.0
+        else:
+            return ((value - max_hard) / (min_easy - max_hard)) * 10.0
+
+def calculate_hix_scientific(text):
+    params = extract_text_parameters(text)
+    if params is None:
+        return 0
+    amstad = calculate_amstad(params)
+    wsf1 = calculate_wsf1(params)
+    smog = calculate_smog(params)
+    lix = calculate_lix(params)
+    amstad_scaled = scale_to_0_10(amstad, min_easy=70, max_hard=30, inverse=False)
+    wsf1_scaled = scale_to_0_10(wsf1, min_easy=6, max_hard=15, inverse=True)
+    smog_scaled = scale_to_0_10(smog, min_easy=10, max_hard=18, inverse=True)
+    lix_scaled = scale_to_0_10(lix, min_easy=40, max_hard=60, inverse=True)
+    hix = (amstad_scaled + wsf1_scaled + smog_scaled + lix_scaled) / 4 * 2
+    return hix
+
+def interpret_hix(hix_value):
+    if hix_value >= 18:
+        return "Leichte Sprache / Boulevard"
+    elif hix_value >= 16:
+        return "Gute Webtexte / breites Publikum"
+    elif hix_value >= 14:
+        return "Gebildetes Publikum / Sachbücher"
+    elif hix_value >= 10:
+        return "Fachartikel, Behördentexte"
+    else:
+        return "Wissenschaftlich, expertenlastig"
+
+# ============================================================
+# CONTENT-ANALYSE FUNKTIONEN
 # ============================================================
 
 def extract_urls_from_html_sitemap(filepath):
@@ -167,55 +266,7 @@ def extract_internal_links(html_content, base_domain):
             internal_links.append(href)
     return internal_links
 
-def count_syllables(word):
-    word = word.lower()
-    vowels = 'aeiouäöüy'
-    syllable_count = 0
-    previous_was_vowel = False
-    for char in word:
-        is_vowel = char in vowels
-        if is_vowel and not previous_was_vowel:
-            syllable_count += 1
-        previous_was_vowel = is_vowel
-    return max(1, syllable_count)
-
-def calculate_hix(text):
-    """
-    KORREKTER Hohenheimer Verständlichkeitsindex
-    Formel: HIX = 4,06×Satzlänge - 0,875×%Langwörter - 1,693×%Mehrsilber
-    < 0: sehr leicht | 0-10: leicht | 10-20: mittel | 20-30: schwer | >30: sehr schwer
-    """
-    if not text:
-        return 0
-    sentences = re.split(r'[.!?]+', text)
-    sentences = [s.strip() for s in sentences if s.strip()]
-    if not sentences:
-        return 0
-    words = re.findall(r'\b\w+\b', text)
-    if not words:
-        return 0
-    avg_sentence_length = len(words) / len(sentences)
-    long_words = [w for w in words if len(w) >= 6]
-    percent_long_words = (len(long_words) / len(words)) * 100
-    multi_syllable_words = [w for w in words if count_syllables(w) >= 3]
-    percent_multi_syllable = (len(multi_syllable_words) / len(words)) * 100
-    hix = (4.06 * avg_sentence_length - 0.875 * percent_long_words - 1.693 * percent_multi_syllable)
-    return hix
-
-def interpret_hix(hix):
-    if hix < 0:
-        return "sehr leicht verständlich"
-    elif hix < 10:
-        return "leicht verständlich"
-    elif hix < 20:
-        return "mittel verständlich"
-    elif hix < 30:
-        return "schwer verständlich"
-    else:
-        return "sehr schwer verständlich"
-
 def calculate_complexity(text):
-    """Vereinfachte Komplexität 1-3 basierend auf Satzlänge, langen Wörtern, Fachbegriffen"""
     if not text:
         return 1
     sentences = re.split(r'[.!?]+', text)
@@ -292,7 +343,7 @@ def analyze_sitemap(filepath, sitemap_name):
             continue
         word_count = count_words(text)
         complexity = calculate_complexity(text)
-        hix = calculate_hix(text)
+        hix = calculate_hix_scientific(text)
         content_type = detect_content_type(url, html, text)
         keywords = extract_keywords_combined(text, top_k=15)
         internal_links = extract_internal_links(html, base_domain)
@@ -354,10 +405,10 @@ def analyze_thematic_overlap(all_results):
 # HAUPTPROGRAMM
 # ============================================================
 
-print("🚀 SITEMAP ANALYZER - KORRIGIERTE VERSION")
+print("🚀 SITEMAP CONTENT ANALYZER - FINALE VERSION")
 print("="*70)
-print("\n✅ NEU: Korrekter HIX-Score")
-print("✅ NEU: Bessere Keywords (Bi-Gramme + Fachbegriffe statt Einzelwörter)")
+print("\n✅ Wissenschaftlich korrekter HIX (0-20 Skala)")
+print("✅ Verbesserte Keywords (Bi-Gramme + Fachbegriffe)")
 print("\nGeschätzte Dauer: 10-15 Minuten\n")
 
 all_results = []
@@ -389,7 +440,7 @@ if all_results:
             print(f"      Artikel gesamt: {result['total_articles']}")
             print(f"      Ø Wortanzahl: {result['avg_word_count']:.0f} Wörter")
             print(f"      Ø Komplexität: {result['avg_complexity']:.2f}/3")
-            print(f"      Ø HIX-Score: {result['avg_hix']:.1f} ({interpret_hix(result['avg_hix'])})")
+            print(f"      Ø HIX-Score: {result['avg_hix']:.1f}/20 ({interpret_hix(result['avg_hix'])})")
             print(f"\n   📝 CONTENT-TYPEN:")
             for content_type, count in result['content_types'].most_common():
                 percentage = (count / result['successful_analyses']) * 100
@@ -415,7 +466,7 @@ if all_results:
         print(f"📊 GESAMTDURCHSCHNITT (alle drei Sitemaps):")
         print(f"   Ø Wortanzahl: {total_words / total_analyzed:.0f} Wörter pro Artikel")
         overall_hix = total_hix / total_analyzed
-        print(f"   Ø HIX-Score: {overall_hix:.1f} ({interpret_hix(overall_hix)})")
+        print(f"   Ø HIX-Score: {overall_hix:.1f}/20 ({interpret_hix(overall_hix)})")
         print("="*70)
         print(f"\n💡 MIGRATIONS-HINWEISE:")
         all_content_types = set()
